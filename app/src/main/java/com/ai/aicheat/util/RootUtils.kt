@@ -65,14 +65,25 @@ object RootUtils {
     suspend fun takeScreenshot(outputPath: String): File? = withContext(Dispatchers.IO) {
         try {
             // 使用screencap命令截图
-            val result = executeCommand("screencap -p $outputPath")
-            if (result.success) {
+            // 关键修复：添加chmod 666，确保应用非root用户也能读取该文件
+            // 如果screencap成功但应用无法读取，通常是因为默认权限为600（仅root可读）
+            var result = executeCommand("screencap -p $outputPath && chmod 666 $outputPath")
+            
+            // 如果第一次失败，尝试不带chmod（某些旧系统shell行为不同），然后再chmod
+            if (!result.success && result.error.isNotEmpty()) {
+                Log.w(TAG, "First screenshot attempt failed, retrying split commands...")
+                result = executeCommand("screencap -p $outputPath")
+                executeCommand("chmod 666 $outputPath")
+            }
+
+            if (result.success || File(outputPath).exists()) {
                 val file = File(outputPath)
+                // 检查文件是否存在以及大小
                 if (file.exists() && file.length() > 0) {
-                    Log.d(TAG, "Screenshot saved to $outputPath")
+                    Log.d(TAG, "Screenshot saved to $outputPath, size: ${file.length()}")
                     file
                 } else {
-                    Log.e(TAG, "Screenshot file not created or empty")
+                    Log.e(TAG, "Screenshot file not created or empty. Path: $outputPath")
                     null
                 }
             } else {

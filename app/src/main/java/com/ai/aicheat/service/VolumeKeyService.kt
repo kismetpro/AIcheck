@@ -227,7 +227,7 @@ class VolumeKeyService : LifecycleService() {
                     bitmap.recycle()
                 } else {
                     Log.e(TAG, "Screenshot failed")
-                    OverlayService.showText(this@VolumeKeyService, "截图失败")
+                    OverlayService.showText(this@VolumeKeyService, "截图失败: 权限或文件错误")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Process error", e)
