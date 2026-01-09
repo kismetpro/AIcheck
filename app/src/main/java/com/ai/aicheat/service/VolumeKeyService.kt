@@ -142,6 +142,10 @@ class VolumeKeyService : LifecycleService() {
                 os.writeBytes("getevent -l\n")
                 os.flush()
                 
+                mainHandler.post { 
+                    Toast.makeText(this@VolumeKeyService, "按键监听已启动 (getevent)", Toast.LENGTH_SHORT).show() 
+                }
+                
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
                 
                 var lastVolumeDownTime = 0L
@@ -157,6 +161,9 @@ class VolumeKeyService : LifecycleService() {
                         if (currentTime - lastVolumeDownTime > debounceTime) {
                             lastVolumeDownTime = currentTime
                             Log.d(TAG, "Volume DOWN pressed")
+                            mainHandler.post { 
+                                Toast.makeText(this@VolumeKeyService, "检测到音量下键", Toast.LENGTH_SHORT).show() 
+                            }
                             onVolumeDownPressed()
                         }
                     }

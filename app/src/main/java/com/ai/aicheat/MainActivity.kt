@@ -281,6 +281,40 @@ fun MainScreen(
                     Text("停止服务")
                 }
             }
+
+            // 测试功能区
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "调试工具",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+                    
+                    Button(
+                        onClick = {
+                            lifecycleScope.launch {
+                                Toast.makeText(context, "开始截图测试...", Toast.LENGTH_SHORT).show()
+                                val cacheFile = java.io.File(context.cacheDir, "test_screen_capture.png")
+                                val bitmap = RootUtils.takeScreenshotAsBitmap(cacheFile.absolutePath)
+                                if (bitmap != null) {
+                                    Toast.makeText(context, "截图成功! ${bitmap.width}x${bitmap.height}", Toast.LENGTH_LONG).show()
+                                } else {
+                                    Toast.makeText(context, "截图失败，请查看Logcat", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("立即测试截图 (无需按键)")
+                    }
+                }
+            }
             
             // 警告信息
             Card(
