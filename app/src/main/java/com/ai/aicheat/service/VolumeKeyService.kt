@@ -162,9 +162,6 @@ class VolumeKeyService : LifecycleService() {
                         if (currentTime - lastVolumeDownTime > debounceTime) {
                             lastVolumeDownTime = currentTime
                             Log.d(TAG, "Volume DOWN pressed")
-                            mainHandler.post { 
-                                Toast.makeText(this@VolumeKeyService, "检测到音量下键", Toast.LENGTH_SHORT).show() 
-                            }
                             onVolumeDownPressed()
                         }
                     }
