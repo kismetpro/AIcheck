@@ -280,6 +280,7 @@ fun MainScreen(
                 ) {
                     Text("停止服务")
                 }
+            }
 
             // 测试功能区
             Card(
