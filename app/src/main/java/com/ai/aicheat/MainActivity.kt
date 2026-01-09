@@ -298,7 +298,8 @@ fun MainScreen(
                     
                     Button(
                         onClick = {
-                            lifecycleScope.launch {
+                            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+                            lifecycleOwner.lifecycleScope.launch {
                                 Toast.makeText(context, "开始截图测试...", Toast.LENGTH_SHORT).show()
                                 val cacheFile = java.io.File(context.cacheDir, "test_screen_capture.png")
                                 val bitmap = RootUtils.takeScreenshotAsBitmap(cacheFile.absolutePath)
