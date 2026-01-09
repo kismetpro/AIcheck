@@ -280,7 +280,6 @@ fun MainScreen(
                 ) {
                     Text("停止服务")
                 }
-            }
 
             // 测试功能区
             Card(
@@ -296,9 +295,9 @@ fun MainScreen(
                         fontSize = 18.sp
                     )
                     
+                    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
                     Button(
                         onClick = {
-                            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
                             lifecycleOwner.lifecycleScope.launch {
                                 Toast.makeText(context, "开始截图测试...", Toast.LENGTH_SHORT).show()
                                 val cacheFile = java.io.File(context.cacheDir, "test_screen_capture.png")
