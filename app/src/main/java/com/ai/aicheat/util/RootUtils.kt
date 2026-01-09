@@ -99,21 +99,73 @@ object RootUtils {
     /**
      * 使用Root权限截图并返回Bitmap
      */
+    /**
+     * 使用Root权限截图并返回Bitmap
+     * 改进：增加多种读取方式，解决SELinux导致的权限问题
+     */
     suspend fun takeScreenshotAsBitmap(): Bitmap? = withContext(Dispatchers.IO) {
         val tempPath = "/data/local/tmp/screenshot_${System.currentTimeMillis()}.png"
         try {
-            val file = takeScreenshot(tempPath)
-            if (file != null) {
-                val bitmap = BitmapFactory.decodeFile(tempPath)
-                // 删除临时文件
-                executeCommand("rm $tempPath")
-                bitmap
-            } else {
-                null
+            // 1. 使用screencap命令截图到临时文件
+            // 注意：screencap输出可能较慢，需要等待进程完全结束
+            val captureResult = executeCommand("screencap -p $tempPath")
+            if (!captureResult.success) {
+                Log.e(TAG, "Screencap command failed: ${captureResult.error}")
+                return@withContext null
             }
+
+            // 2. 尝试修改权限（针对非Strict SELinux环境）
+            executeCommand("chmod 666 $tempPath")
+
+            // 3. 尝试直接解码文件（最快）
+            var bitmap = BitmapFactory.decodeFile(tempPath)
+
+            // 4. 如果直接解码失败（通常是SELinux拦截），尝试通过Root流读取
+            if (bitmap == null) {
+                Log.w(TAG, "Direct file read failed (SELinux?), trying root stream read...")
+                val bytes = executeCommandForBinary("cat $tempPath")
+                if (bytes != null && bytes.isNotEmpty()) {
+                    bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                }
+            }
+
+            // 5. 清理临时文件
+            executeCommand("rm $tempPath")
+            
+            if (bitmap == null) {
+                Log.e(TAG, "Failed to decode screenshot bitmap")
+            } else {
+                Log.d(TAG, "Screenshot success, size: ${bitmap.width}x${bitmap.height}")
+            }
+            
+            bitmap
         } catch (e: Exception) {
             Log.e(TAG, "Take screenshot as bitmap failed", e)
-            executeCommand("rm $tempPath")
+            // 确保清理
+            try { executeCommand("rm $tempPath") } catch (ignore: Exception) {}
+            null
+        }
+    }
+
+    /**
+     *以此二进制方式执行命令并获取输出（用于读取文件流）
+     */
+    private suspend fun executeCommandForBinary(command: String): ByteArray? = withContext(Dispatchers.IO) {
+        try {
+            val process = Runtime.getRuntime().exec("su")
+            val os = DataOutputStream(process.outputStream)
+            os.writeBytes("$command\n")
+            os.writeBytes("exit\n")
+            os.flush()
+            
+            // 读取所有字节输出
+            // 注意：readBytes()会阻塞直到流关闭，所以必须确保发送了exit
+            val bytes = process.inputStream.readBytes()
+            process.waitFor()
+            
+            bytes
+        } catch (e: Exception) {
+            Log.e(TAG, "Binary command execution failed", e)
             null
         }
     }
