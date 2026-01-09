@@ -29,43 +29,18 @@ class OverlayService : Service() {
         const val ACTION_SHOW_TEXT = "com.ai.aicheat.SHOW_TEXT"
         const val ACTION_HIDE_TEXT = "com.ai.aicheat.HIDE_TEXT"
         const val ACTION_CLEAR_TEXT = "com.ai.aicheat.CLEAR_TEXT"
+        const val ACTION_TRIGGER_SCREENSHOT = "com.ai.aicheat.TRIGGER_SCREENSHOT"
+        const val ACTION_RESTORE_OVERLAY = "com.ai.aicheat.RESTORE_OVERLAY"
         const val EXTRA_TEXT = "extra_text"
-        
-        private var instance: OverlayService? = null
-        
-        fun showText(context: Context, text: String) {
-            val intent = Intent(context, OverlayService::class.java).apply {
-                action = ACTION_SHOW_TEXT
-                putExtra(EXTRA_TEXT, text)
-            }
-            context.startService(intent)
-        }
-        
-        fun hideText(context: Context) {
-            val intent = Intent(context, OverlayService::class.java).apply {
-                action = ACTION_HIDE_TEXT
-            }
-            context.startService(intent)
-        }
-        
-        fun clearText(context: Context) {
-            val intent = Intent(context, OverlayService::class.java).apply {
-                action = ACTION_CLEAR_TEXT
-            }
-            context.startService(intent)
-        }
     }
-    
-    private var windowManager: WindowManager? = null
-    private var overlayView: View? = null
-    private var textView: TextView? = null
-    private var isTextVisible = true
-    private var currentText = ""
+
+    private var triggerView: View? = null
     
     override fun onCreate() {
         super.onCreate()
         instance = this
         createOverlayView()
+        createTriggerView()
         Log.d(TAG, "OverlayService created")
     }
     
@@ -76,6 +51,8 @@ class OverlayService : Service() {
             ACTION_SHOW_TEXT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT) ?: ""
                 showOverlayText(text)
+                // 显示文本时同时也确保Trigger可见（除非用户之前特意全部隐藏了，这里假设显示结果时恢复Trigger以便下次操作）
+                showTrigger()
             }
             ACTION_HIDE_TEXT -> {
                 toggleTextVisibility()
@@ -83,73 +60,132 @@ class OverlayService : Service() {
             ACTION_CLEAR_TEXT -> {
                 clearOverlayText()
             }
+            ACTION_RESTORE_OVERLAY -> {
+                showTrigger()
+            }
         }
         return START_STICKY
     }
     
+    // ... createOverlayView (text) stays mostly same, but make sure it doesn't overlap trigger if possible
+    // For brevity, I'll rely on existing createOverlayView but ensure createTriggerView is added.
+    
     private fun createOverlayView() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         
-        // 创建TextView用于显示文本
+        // --- 文本框 View ---
         textView = TextView(this).apply {
-            setTextColor(0x99FFFFFF.toInt())  // 半透明白色
+            setTextColor(0x99FFFFFF.toInt())
             textSize = 12f
             setPadding(16, 8, 16, 8)
-            setBackgroundColor(0x33000000)  // 非常透明的黑色背景
+            setBackgroundColor(0x33000000)
             gravity = Gravity.START
             maxLines = 10
         }
         
         overlayView = textView
         
-        // 窗口参数 - 极其隐蔽
-        val params = WindowManager.LayoutParams().apply {
-            // 窗口类型
+        val paramsText = WindowManager.LayoutParams().apply {
             type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             } else {
                 @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE
             }
-            
-            // 关键标志位
-            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or  // 不获取焦点
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or   // 不可触摸
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or  // 可以在状态栏内
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or  // 无边界限制
-                    WindowManager.LayoutParams.FLAG_SECURE  // 关键：防止被截图！
-            
-            // 透明格式
+            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_SECURE
             format = PixelFormat.TRANSLUCENT
-            
-            // 尺寸
             width = WindowManager.LayoutParams.WRAP_CONTENT
             height = WindowManager.LayoutParams.WRAP_CONTENT
-            
-            // 位置 - 放在屏幕边缘，不显眼
             gravity = Gravity.TOP or Gravity.START
             x = 20
             y = 100
         }
         
         try {
-            windowManager?.addView(overlayView, params)
-            overlayView?.visibility = View.GONE  // 初始隐藏
-            Log.d(TAG, "Overlay view created with FLAG_SECURE")
+            windowManager?.addView(overlayView, paramsText)
+            overlayView?.visibility = View.GONE
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to create overlay", e)
+            Log.e(TAG, "Failed to create text overlay", e)
+        }
+    }
+
+    private fun createTriggerView() {
+        // --- 触发点 View ---
+        val triggerDot = View(this).apply {
+            // 设置背景为半透明小圆点
+            background = ContextCompat.getDrawable(this@OverlayService, com.ai.aicheat.R.drawable.trigger_dot_background)
+        }
+        
+        triggerView = triggerDot
+        
+        val paramsTrigger = WindowManager.LayoutParams().apply {
+            type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+            // 注意：这里去掉了 FLAG_NOT_TOUCHABLE，因为不仅要看，还要点
+            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_SECURE // 同样防止被截图
+            
+            format = PixelFormat.TRANSLUCENT
+            width = 40  // 约等于 15-20dp density dependent, hardcoded for now or use dp2px
+            height = 40
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END // 默认靠右居中
+            x = 0
+            y = 0
+        }
+        
+        // 点击事件：隐藏自己 -> 截图
+        triggerDot.setOnClickListener {
+            // 隐藏所有悬浮窗
+            triggerView?.visibility = View.GONE
+            overlayView?.visibility = View.GONE
+            
+            Log.d(TAG, "Trigger dot clicked, hiding and broadcasting shot request")
+            
+            // 发送广播触发截图
+            sendBroadcast(Intent(ACTION_TRIGGER_SCREENSHOT).setPackage(packageName))
+        }
+        
+        // 长按事件：隐藏并退出悬浮显示
+        triggerDot.setOnLongClickListener {
+            triggerView?.visibility = View.GONE
+            overlayView?.visibility = View.GONE
+            Log.d(TAG, "Trigger dot long clicked, hiding all")
+            android.widget.Toast.makeText(this, "悬浮窗已隐藏，点击通知栏恢复", android.widget.Toast.LENGTH_SHORT).show()
+            true
+        }
+        
+        try {
+            windowManager?.addView(triggerView, paramsTrigger)
+            Log.d(TAG, "Trigger view created")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create trigger view", e)
         }
     }
     
     private fun showOverlayText(text: String) {
         currentText = text
+        isTextVisible = true // 强制显示
         textView?.post {
             textView?.text = text
-            if (isTextVisible) {
-                overlayView?.visibility = View.VISIBLE
-            }
+            overlayView?.visibility = View.VISIBLE
         }
         Log.d(TAG, "Showing text: ${text.take(50)}...")
+    }
+
+    private fun showTrigger() {
+        triggerView?.post {
+            triggerView?.visibility = View.VISIBLE
+        }
     }
     
     private fun toggleTextVisibility() {
@@ -175,16 +211,18 @@ class OverlayService : Service() {
     
     /**
      * 设置悬浮窗透明度
-     * @param alpha 0.0f(完全透明) - 1.0f(不透明)
      */
     fun setOverlayAlpha(alpha: Float) {
         textView?.post {
             textView?.alpha = alpha
         }
+        triggerView?.post {
+            triggerView?.alpha = alpha
+        }
     }
     
     /**
-     * 设置悬浮窗位置
+     * 设置悬浮窗位置 (仅针对文本框，触发点暂固定)
      */
     fun setOverlayPosition(x: Int, y: Int) {
         val params = overlayView?.layoutParams as? WindowManager.LayoutParams
@@ -198,7 +236,8 @@ class OverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try {
-            windowManager?.removeView(overlayView)
+            if (overlayView != null) windowManager?.removeView(overlayView)
+            if (triggerView != null) windowManager?.removeView(triggerView)
         } catch (e: Exception) {
             Log.e(TAG, "Error removing overlay", e)
         }

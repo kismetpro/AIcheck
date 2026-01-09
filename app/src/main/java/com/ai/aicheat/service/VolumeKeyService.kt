@@ -69,12 +69,33 @@ class VolumeKeyService : LifecycleService() {
     private var isProcessing = false  // 防止重复触发
     private val mainHandler = Handler(Looper.getMainLooper())
     
+    private val triggerReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == OverlayService.ACTION_TRIGGER_SCREENSHOT) {
+                Log.d(TAG, "Received screenshot trigger from overlay")
+                // 收到悬浮窗触发信号，执行截图
+                // 延迟一小会儿确保悬浮窗彻底消失
+                mainHandler.postDelayed({
+                    performScreenshotAndAnalyze()
+                }, 200)
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         startKeyMonitor()
+        
+        // 注册悬浮窗触发广播
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            registerReceiver(triggerReceiver, android.content.IntentFilter(OverlayService.ACTION_TRIGGER_SCREENSHOT),
+                RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(triggerReceiver, android.content.IntentFilter(OverlayService.ACTION_TRIGGER_SCREENSHOT))
+        }
         
         // 同时启动悬浮窗服务
         startService(Intent(this, OverlayService::class.java))
@@ -108,23 +129,27 @@ class VolumeKeyService : LifecycleService() {
     }
     
     private fun createNotification(): Notification {
-        val pendingIntent = PendingIntent.getActivity(
+        // 点击通知栏恢复悬浮窗
+        val restoreIntent = Intent(this, OverlayService::class.java).apply {
+            action = OverlayService.ACTION_RESTORE_OVERLAY
+        }
+        val pendingIntent = PendingIntent.getService(
             this,
             0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
+            restoreIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("服务运行中")
-            .setContentText("正在监听...")
+            .setContentTitle("AI助手运行中")
+            .setContentText("点击此处恢复悬浮窗") // 更新提示文案
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .build()
     }
-    
+
     /**
      * 启动按键监听
      * 使用getevent命令监听底层输入事件
@@ -186,11 +211,15 @@ class VolumeKeyService : LifecycleService() {
             }
         }
     }
-    
+
     /**
      * 音量下键按下 - 截图并发送AI
      */
     private fun onVolumeDownPressed() {
+        performScreenshotAndAnalyze()
+    }
+    
+    private fun performScreenshotAndAnalyze() {
         if (isProcessing) {
             Log.d(TAG, "Already processing, skip")
             return
@@ -199,7 +228,8 @@ class VolumeKeyService : LifecycleService() {
         lifecycleScope.launch {
             isProcessing = true
             try {
-                // 显示处理提示
+                // 显示处理提示 (注意：如果是悬浮窗触发，此时悬浮窗是隐藏的，我们需要显示文本框)
+                // OverlayService.showText 会自动让 Overlay 可见
                 OverlayService.showText(this@VolumeKeyService, "正在处理...")
                 
                 // 短暂延迟，避免截到按键动画
