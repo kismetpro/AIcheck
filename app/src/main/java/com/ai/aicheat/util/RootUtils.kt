@@ -104,85 +104,61 @@ object RootUtils {
      * 改进：增加多种读取方式，解决SELinux导致的权限问题
      */
     /**
-     * 终极截图方案
-     * 策略1: 直接流式读取 (screencap -p -> stdout -> Bitmap) - 最快，无文件权限问题
-     * 策略2: SD卡中转 (screencap -p /sdcard/xxx -> Bitmap) - 兼容性兜底
+     * 终极截图方案 v3 (文件拷贝法)
+     * 之前的流式和SD卡方案可能受到系统限制。
+     * 本方案：Root先截取到系统临时区 -> 拷贝到应用私有缓存区 -> 提权 -> 应用读取
+     * @param savePath 应用私有目录下的目标路径，例如 context.cacheDir.seconds + "/scr.png"
      */
-    suspend fun takeScreenshotAsBitmap(): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun takeScreenshotAsBitmap(savePath: String): Bitmap? = withContext(Dispatchers.IO) {
         val start = System.currentTimeMillis()
+        val sysTempPath = "/data/local/tmp/s_${System.currentTimeMillis()}.png"
         
-        // 方案一：标准输出流式读取
-        // 优点：不生成中间文件，速度快，无SELinux文件上下文问题
         try {
-            Log.d(TAG, "Trying Strategy 1: Direct Stream")
-            val process = Runtime.getRuntime().exec("su")
-            val os = DataOutputStream(process.outputStream)
-            os.writeBytes("screencap -p\n")
-            os.writeBytes("exit\n") // 必须明确退出，否则流不会结束
-            os.flush()
-
-            // 关键：不手动读取字节，直接交给BitmapFactory从流中解码
-            // 这样可以避免手动处理Buffer带来的OOM或截断问题
-            val bitmap = BitmapFactory.decodeStream(process.inputStream)
+            Log.d(TAG, "Taking screenshot via file copy strategy...")
             
-            // 消费掉任何错误输出，防止阻塞
-            try {
-                if (process.errorStream.available() > 0) {
-                    val errorMsg = process.errorStream.bufferedReader().readText()
-                    if (errorMsg.isNotEmpty()) Log.w(TAG, "Stream stderr: $errorMsg")
-                }
-                process.waitFor()
-            } catch (e: Exception) { /* ignore */ }
+            // 1. 先截取到 /data/local/tmp (Root 环境最可靠的写入点)
+            val capResult = executeCommand("screencap -p $sysTempPath")
             
-            process.destroy()
+            // 如果 screencap 没有任何输出且退出码非0，说明截图本身挂了
+            if (!capResult.success && capResult.error.contains("inaccessible")) {
+                Log.e(TAG, "Screencap failed: ${capResult.error}")
+                return@withContext null
+            }
+            
+            // 2. 检查文件是否生成
+            val checkFile = executeCommand("ls -l $sysTempPath")
+            if (checkFile.output.isBlank() || checkFile.output.contains("No such file")) {
+                Log.e(TAG, "Screencap file not created at $sysTempPath")
+                return@withContext null
+            }
 
+            // 3. 将文件拷贝到应用私有目录 (savePath)
+            // 直接 screencap 到 savePath 可能会因为父目录权限问题失败，所以用 cp
+            executeCommand("cp $sysTempPath $savePath")
+            
+            // 4. 修改应用私有目录下该文件的权限，确保应用层可读
+            // (虽然在私有目录下，但如果是 Root cp 过去的，owner 还是 root)
+            executeCommand("chmod 666 $savePath")
+            
+            // 5. 应用读取
+            val bitmap = BitmapFactory.decodeFile(savePath)
+            
+            // 6. 清理系统临时文件
+            executeCommand("rm $sysTempPath")
+            
+            // 确认结果
             if (bitmap != null) {
-                Log.i(TAG, "Strategy 1 Success! Cost: ${System.currentTimeMillis() - start}ms")
+                Log.i(TAG, "Screenshot success! Size: ${bitmap.width}x${bitmap.height}, Cost: ${System.currentTimeMillis() - start}ms")
                 return@withContext bitmap
             } else {
-                Log.w(TAG, "Strategy 1 failed: decodeStream returned null")
+                Log.e(TAG, "Bitmap decode failed from $savePath. File size: ${File(savePath).length()}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Strategy 1 error", e)
-        }
-
-        // 方案二：SD卡文件兜底
-        // /data/local/tmp 在高版本Android极其严格，改用 /sdcard/ (即 /storage/emulated/0/)
-        // 这里通常是Shell和Root都可读写的公共区域
-        try {
-            Log.d(TAG, "Trying Strategy 2: SDCard Fallback")
-            val fallbackPath = "/sdcard/window_dump.png"
             
-            // 1. 截图 (强制覆盖)
-            var cmdResult = executeCommand("screencap -p $fallbackPath")
-            if (!cmdResult.success) {
-                // 某些设备可能需要 /storage/emulated/0/
-                cmdResult = executeCommand("screencap -p /storage/emulated/0/window_dump.png")
-            }
-
-            if (File(fallbackPath).exists()) {
-                // 2. 也是最关键的一步：提权。
-                // 即使是Root创建的文件，其他应用读取也可能受限，直接chmod 777
-                executeCommand("chmod 777 $fallbackPath")
-                
-                // 3. 读取
-                val bitmap = BitmapFactory.decodeFile(fallbackPath)
-                
-                // 4. 清理
-                executeCommand("rm $fallbackPath")
-                
-                if (bitmap != null) {
-                    Log.i(TAG, "Strategy 2 Success! Cost: ${System.currentTimeMillis() - start}ms")
-                    return@withContext bitmap
-                }
-            } else {
-                Log.e(TAG, "Strategy 2: File not found after screencap")
-            }
         } catch (e: Exception) {
-            Log.e(TAG, "Strategy 2 error", e)
+            Log.e(TAG, "Screenshot process error", e)
+            try { executeCommand("rm $sysTempPath") } catch (_: Exception) {}
         }
-
-        Log.e(TAG, "All strategies failed")
+        
         return@withContext null
     }
 

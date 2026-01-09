@@ -201,7 +201,8 @@ class VolumeKeyService : LifecycleService() {
                 
                 // 截图
                 Log.d(TAG, "Taking screenshot...")
-                val bitmap = RootUtils.takeScreenshotAsBitmap()
+                val cacheFile = File(cacheDir, "screen_capture.png")
+                val bitmap = RootUtils.takeScreenshotAsBitmap(cacheFile.absolutePath)
                 
                 if (bitmap != null) {
                     Log.d(TAG, "Screenshot taken, sending to AI...")
