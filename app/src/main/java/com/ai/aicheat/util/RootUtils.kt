@@ -103,72 +103,92 @@ object RootUtils {
      * 使用Root权限截图并返回Bitmap
      * 改进：增加多种读取方式，解决SELinux导致的权限问题
      */
+    /**
+     * 终极截图方案
+     * 策略1: 直接流式读取 (screencap -p -> stdout -> Bitmap) - 最快，无文件权限问题
+     * 策略2: SD卡中转 (screencap -p /sdcard/xxx -> Bitmap) - 兼容性兜底
+     */
     suspend fun takeScreenshotAsBitmap(): Bitmap? = withContext(Dispatchers.IO) {
-        val tempPath = "/data/local/tmp/screenshot_${System.currentTimeMillis()}.png"
+        val start = System.currentTimeMillis()
+        
+        // 方案一：标准输出流式读取
+        // 优点：不生成中间文件，速度快，无SELinux文件上下文问题
         try {
-            // 1. 使用screencap命令截图到临时文件
-            // 注意：screencap输出可能较慢，需要等待进程完全结束
-            val captureResult = executeCommand("screencap -p $tempPath")
-            if (!captureResult.success) {
-                Log.e(TAG, "Screencap command failed: ${captureResult.error}")
-                return@withContext null
-            }
+            Log.d(TAG, "Trying Strategy 1: Direct Stream")
+            val process = Runtime.getRuntime().exec("su")
+            val os = DataOutputStream(process.outputStream)
+            os.writeBytes("screencap -p\n")
+            os.writeBytes("exit\n") // 必须明确退出，否则流不会结束
+            os.flush()
 
-            // 2. 尝试修改权限（针对非Strict SELinux环境）
-            executeCommand("chmod 666 $tempPath")
-
-            // 3. 尝试直接解码文件（最快）
-            var bitmap = BitmapFactory.decodeFile(tempPath)
-
-            // 4. 如果直接解码失败（通常是SELinux拦截），尝试通过Root流读取
-            if (bitmap == null) {
-                Log.w(TAG, "Direct file read failed (SELinux?), trying root stream read...")
-                val bytes = executeCommandForBinary("cat $tempPath")
-                if (bytes != null && bytes.isNotEmpty()) {
-                    bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            // 关键：不手动读取字节，直接交给BitmapFactory从流中解码
+            // 这样可以避免手动处理Buffer带来的OOM或截断问题
+            val bitmap = BitmapFactory.decodeStream(process.inputStream)
+            
+            // 消费掉任何错误输出，防止阻塞
+            try {
+                if (process.errorStream.available() > 0) {
+                    val errorMsg = process.errorStream.bufferedReader().readText()
+                    if (errorMsg.isNotEmpty()) Log.w(TAG, "Stream stderr: $errorMsg")
                 }
+                process.waitFor()
+            } catch (e: Exception) { /* ignore */ }
+            
+            process.destroy()
+
+            if (bitmap != null) {
+                Log.i(TAG, "Strategy 1 Success! Cost: ${System.currentTimeMillis() - start}ms")
+                return@withContext bitmap
+            } else {
+                Log.w(TAG, "Strategy 1 failed: decodeStream returned null")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Strategy 1 error", e)
+        }
+
+        // 方案二：SD卡文件兜底
+        // /data/local/tmp 在高版本Android极其严格，改用 /sdcard/ (即 /storage/emulated/0/)
+        // 这里通常是Shell和Root都可读写的公共区域
+        try {
+            Log.d(TAG, "Trying Strategy 2: SDCard Fallback")
+            val fallbackPath = "/sdcard/window_dump.png"
+            
+            // 1. 截图 (强制覆盖)
+            var cmdResult = executeCommand("screencap -p $fallbackPath")
+            if (!cmdResult.success) {
+                // 某些设备可能需要 /storage/emulated/0/
+                cmdResult = executeCommand("screencap -p /storage/emulated/0/window_dump.png")
             }
 
-            // 5. 清理临时文件
-            executeCommand("rm $tempPath")
-            
-            if (bitmap == null) {
-                Log.e(TAG, "Failed to decode screenshot bitmap")
+            if (File(fallbackPath).exists()) {
+                // 2. 也是最关键的一步：提权。
+                // 即使是Root创建的文件，其他应用读取也可能受限，直接chmod 777
+                executeCommand("chmod 777 $fallbackPath")
+                
+                // 3. 读取
+                val bitmap = BitmapFactory.decodeFile(fallbackPath)
+                
+                // 4. 清理
+                executeCommand("rm $fallbackPath")
+                
+                if (bitmap != null) {
+                    Log.i(TAG, "Strategy 2 Success! Cost: ${System.currentTimeMillis() - start}ms")
+                    return@withContext bitmap
+                }
             } else {
-                Log.d(TAG, "Screenshot success, size: ${bitmap.width}x${bitmap.height}")
+                Log.e(TAG, "Strategy 2: File not found after screencap")
             }
-            
-            bitmap
         } catch (e: Exception) {
-            Log.e(TAG, "Take screenshot as bitmap failed", e)
-            // 确保清理
-            try { executeCommand("rm $tempPath") } catch (ignore: Exception) {}
-            null
+            Log.e(TAG, "Strategy 2 error", e)
         }
+
+        Log.e(TAG, "All strategies failed")
+        return@withContext null
     }
 
     /**
-     *以此二进制方式执行命令并获取输出（用于读取文件流）
+     * 执行二进制命令的辅助方法已不再需要，已整合进主流程或无需使用
      */
-    private suspend fun executeCommandForBinary(command: String): ByteArray? = withContext(Dispatchers.IO) {
-        try {
-            val process = Runtime.getRuntime().exec("su")
-            val os = DataOutputStream(process.outputStream)
-            os.writeBytes("$command\n")
-            os.writeBytes("exit\n")
-            os.flush()
-            
-            // 读取所有字节输出
-            // 注意：readBytes()会阻塞直到流关闭，所以必须确保发送了exit
-            val bytes = process.inputStream.readBytes()
-            process.waitFor()
-            
-            bytes
-        } catch (e: Exception) {
-            Log.e(TAG, "Binary command execution failed", e)
-            null
-        }
-    }
     
     /**
      * 使用Root权限监听按键事件
